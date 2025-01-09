@@ -1,5 +1,5 @@
 The RShiny App was a Final Project Submitted for Boston University's class BF591. 
-The Data Folder found in this repository contains everything needed to use the app. 
+The Data Folder found in this repository contains everything needed to use the app except for a normalized counts matrix. 
 Users can implement their own data given it is the correct file type as specifified by the app. 
 The counts matrix was obtained from data used in Labadorf et. al.
 
