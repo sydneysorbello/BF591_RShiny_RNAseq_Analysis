@@ -26,7 +26,8 @@ library(circlize)
 library(fgsea)
 library(org.Hs.eg.db)
 
-
+# we can define a set of variables outside of the app and then call it later on
+# these represent the choices of plot axes later on
 choices <- c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
 
 # Define UI
@@ -38,43 +39,57 @@ ui <- fluidPage(
   # here we designate the sidebar layout
   # this is where we take all of the user input
   tabsetPanel(
+    # the first tab in the app allows us to view characteristics of the samples metadata
     tabPanel("Samples",
              sidebarLayout(
                sidebarPanel(
+                 # this defines a space for the user to upload data
                  fileInput("Tab1Input", "Load descriptive sample data"),
                  hr(),
+                 # in the side bar, the user can customize the ridgeline plot
                  tabPanel("Ridgeline Plot",
+                          # based on the metadata they have uploaded, they can select variable for the plot
                           selectInput("ridge_var", "Select a Continuous Variable:",
-                                      choices = NULL), # Populated dynamically
+                                      choices = NULL), 
                           selectInput("ridge_group", "Group By (Categorical Variable):",
-                                      choices = NULL), # Populated dynamically
+                                      choices = NULL),
                           sliderInput("bin_width", "Adjust Bin Width:", 
                                       min = 0.5, max = 5, value = 1, step = 0.5),
-                          checkboxInput("scale_density", "Scale Densities?", value = TRUE))
+                          checkboxInput("scale_density", "Scale Densities", value = TRUE))
                ),
+               # the main panel features three tabs
                mainPanel(
                  tabsetPanel(
+                   # a summary table
                    tabPanel("Summary", tableOutput("metadata")),
+                   # a sample table sotring column information
                    tabPanel("Table", DT::dataTableOutput("sampletable")),
+                   # and finally a ridgline plot
                    tabPanel("Ridgeline Plot",
                             plotOutput("ridgeline_plot"))
                  )
                ))),
+    # the second table displays count information complete with a heatmap, PCA and diagnostic plot
     tabPanel("Counts",
              sidebarLayout(
                sidebarPanel(
+                 # The user can upload the normalized counts matrix
                  fileInput("counts", "Load normalized counts data"),
+                 # and specify thresholds for the counts summary
                  sliderInput("var_threshold", "Select to include genes with at least X percentile of variance", 0, 100, 50),
                  sliderInput("zero_threshold", "Select to include genes with at least X samples that are non-zero", 0, 10, 5),
+                 # the user can alsochoose the plot type for the diagnostic plot variance or zeros
                  radioButtons("plot_type", "Select Diagnostic Plot:",
                               choices = list("Median Count vs Variance" = "variance",
                                              "Median Count vs Number of Zeros" = "zeros"),
                               selected = "variance"),
                  hr(),
+                 # finally, they can specify is they would like to view the heatmap log-transformed (recommended)
                  checkboxInput("log_transform", "Log-Transform Counts for Heatmap", value = TRUE)
                ),
                mainPanel(
                  tabsetPanel(
+                   # there are 4 tabs in the main panel: counts summary table, diagnostic plot, heatmap, and PCA plot
                    tabPanel("Summary", tableOutput("countssummary")),
                    tabPanel("Diagnostic Plots", plotOutput("scatter_plot")),
                    tabPanel("Heatmap", plotOutput("heatmap_plot")),
@@ -85,6 +100,7 @@ ui <- fluidPage(
                             plotOutput("pca_plot"))
                  )
                ))),
+    # The next main tab explores differential expression
     tabPanel("DE",
              sidebarLayout(
                sidebarPanel(
@@ -110,32 +126,41 @@ ui <- fluidPage(
                    # and the other to display the table
                    tabPanel("Table", tableOutput("table"))
                  )))),
+    # the final tab explores gene set enrichment analysis
     tabPanel("GSEA",
              sidebarLayout(
                sidebarPanel(
+                 # we ask the user to upload the DEseq results
                  fileInput("deseq_file", "Upload Differential Expression Results (CSV)",
                            accept = c(".csv", ".tsv")),
+                 # we also ask that they provide a gene set database with a file sufix of .gmt
                  fileInput("gmt_file", "Upload Gene Set Database (GMT)", 
                            accept = c(".gmt")),
                  hr(),
                  tabsetPanel(
+                   # within the side panel, there are more tabs
+                   # the first allows for input on the barplot
                    tabPanel("barplot NES",
                             sliderInput("top_pathways", "Number of Top Pathways:",
                                         min = 5, max = 50, value = 10, step = 1)),
+                   # the second for input on the results table (with a p-adjusted filter)
                    tabPanel("Results Table",
                             sliderInput("padj_filter", "Filter by Adjusted P-value:",
                                         min = 0, max = 0.1, value = 0.05, step = 0.01),
+                            # here they can specifiy the desired direction
                             radioButtons("nes_direction", "NES Direction:",
                                          choices = list("All" = "all",
                                                         "Positive NES" = "pos",
                                                         "Negative NES" = "neg"),
                                          selected = "all"),
+                            # finally they can download the results of the significant pathways
                             downloadButton("download_results", "Download Results")),
                    tabPanel("Scatter Plot",
                             sliderInput("padj_filtered_scatter", "Filter by Adjusted P-value:",
                                         min = 0, max = 0.1, value = 0.05, step = 0.01))
                  )
                ),
+               # the main panel displays 3 tabs: one for the barplot of pathway foldchange, the significant pathway results and a diagnostic scatter plot
                mainPanel(
                  tabsetPanel(
                    tabPanel("Barplot NES",
@@ -152,12 +177,14 @@ ui <- fluidPage(
 # Define server logic required
 server <- function(input, output, session) {
   options(shiny.maxRequestSize=30*1024^2)
-  
+
+  ### Samples Tab ###
   # The following is the server side for tab 1: Samples  
-  
+  # we always use reactive expressions
   load_data_t1 <- reactive({
     req(input$Tab1Input)
     tryCatch({
+      # here we read the input csv
       datat1 <- read_csv(input$Tab1Input$datapath, show_col_types = FALSE) %>%
         rename_with(~ make.names(.)) %>%
         as_tibble()
@@ -169,7 +196,8 @@ server <- function(input, output, session) {
       stop("Error in load_data_t1: ", e$message)
     })
   })
-  
+
+  # make the metadata table
   generate_metadata <- function(data) {
     # Ensure data is a tibble
     data <- as_tibble(data)
@@ -177,7 +205,9 @@ server <- function(input, output, session) {
     print("Columns being summarized:")
     print(colnames(data))
     
-    # Generate metadata safely
+    # Generate metadata by determining the value type in each column
+    # gather mean and stdev for the continuous variables
+    # and the options for distinct values
     metadata <- data.frame(
       `Column Name` = colnames(data),
       Type = sapply(data, function(x) {
@@ -198,7 +228,7 @@ server <- function(input, output, session) {
     return(metadata)
   }
   
-  
+  # the metadata table is a simple print of the entered table
   output$metadata <- renderTable({
     datat1 <- load_data_t1()
     req(datat1)
@@ -206,11 +236,10 @@ server <- function(input, output, session) {
     metadata
   })
   
-  
   output$sampletable = DT::renderDataTable({
     as.data.frame(load_data_t1())
   })
-  
+  # now we can make a table that specifies the numeric and character columns
   observe({
     req(load_data_t1())
     continuous_vars <- load_data_t1() %>% dplyr::select(where(is.numeric)) %>% colnames()
@@ -232,7 +261,7 @@ server <- function(input, output, session) {
     datatable(metadata(), options = list(pageLength = 10))
   })
   
-  # Ridgeline plot
+  # Ridgeline plot, we apply the user selected continuous variable and the group
   output$ridgeline_plot <- renderPlot({
     req(load_data_t1(), input$ridge_var, input$ridge_group)
     
@@ -263,15 +292,13 @@ server <- function(input, output, session) {
     })
   })
   
-  #### Counts Tab####
-  
-  #### Counts Tab####
-  
+  #### Counts Tab ####
+  # store the entered counts in a variable
   counts_data <- reactive ({
     req(input$counts)
     
     df <- read_tsv(input$counts$datapath)
-    
+    # create a table evaluating the counts matrix for zeros and the variance
     df_filtered <- df %>%
       rowwise() %>%
       mutate(MedianCount = median(c_across(-1)),
@@ -280,15 +307,16 @@ server <- function(input, output, session) {
              NumZeros = ncol(df) - 1 - Nonzero
       ) %>%
       ungroup()
-    
+    # take user input of the variance threshold
     variance_threshold <- quantile(df_filtered$Variance, input$var_threshold / 100)
-    
+    # pass the filter
     df_filtered <- df_filtered %>%
       mutate(PassFilter = Variance >= variance_threshold & Nonzero >= input$zero_threshold)
-    
+    # return the filtered data table
     return(df_filtered)
   })
-  
+  # create a summary of the counts matrix
+  # while also considering the user input
   output$countssummary <- renderTable({
     req(counts_data())
     df <- counts_data()
@@ -308,7 +336,9 @@ server <- function(input, output, session) {
     
     summary
   })
-  
+  # the scatter diagnostic plot will help us evauluate the quality of the counts matrix
+  # the user has the option to look at the variance or the zero counts
+  # first the variance
   output$scatter_plot <- renderPlot({
     req(counts_data())
     df <- counts_data()
@@ -326,7 +356,7 @@ server <- function(input, output, session) {
           color = "Pass Filter"
         ) +
         theme_minimal()
-      
+      # and the zero counts
     } else if (input$plot_type == "zeros") {
       ggplot(df, aes(x = MedianCount, y = NumZeros, color = PassFilter)) +
         geom_point(alpha = 0.6) +
@@ -341,7 +371,8 @@ server <- function(input, output, session) {
         theme_minimal()
     }
   })
-  
+  # now we create a heatmap for the counts martix
+  # the only user input here is whether the heatmap should be displayed log scale or not
   output$heatmap_plot <- renderPlot({
     req(counts_data())
     df <- counts_data() %>% filter(PassFilter) %>% dplyr::select(-MedianCount, -Variance, -Nonzero, -NumZeros, -PassFilter)
@@ -360,7 +391,10 @@ server <- function(input, output, session) {
       col = colorRamp2(c(min(mat), max(mat)), c("blue", "red"))
     )
   })
-  
+
+  # finally, we create a PCA plot to better understand our samples
+  # each point on the PCA plot represents a different sample
+  # we expect the control and the experimental groups to cluster together
   output$pca_plot <- renderPlot({
     req(counts_data())
     df <- counts_data() %>% filter(PassFilter) %>% dplyr::select(-MedianCount, -Variance, -Nonzero, -NumZeros, -PassFilter)
@@ -373,7 +407,7 @@ server <- function(input, output, session) {
     pca <- prcomp(t(mat), scale. = TRUE)
     pcs <- as_tibble(pca$x)
     explained <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
-    
+    # here we create the scatter plot
     ggplot(pcs, aes_string(x = input$pc_x, y = input$pc_y)) +
       geom_point(color = "darkorange") +
       labs(
@@ -384,7 +418,7 @@ server <- function(input, output, session) {
       theme_minimal()
   })
   
-  #' Volcano plot
+  #### Volcano plot
   volcano_plot <- function(dataf, x_name, y_name, slider, color1, color2) {
     # in order to plot, we have to change the formatting of the selected x and y axes
     x_sym <- rlang::sym(x_name)
@@ -444,6 +478,7 @@ server <- function(input, output, session) {
   bordered = TRUE
   )
   ### GSEA TAB###
+  # we ask for user input for the deseq results and the gmt pathways
   deseq_data <- reactive({
     req(input$deseq_file)
     read_csv(input$deseq_file$datapath)
@@ -508,6 +543,7 @@ server <- function(input, output, session) {
   })
   
   ### SCATTER PLOT ###
+  # user input is implemented into the thresholds and coloring of the plt
   output$scatter_fgsea <- renderPlot({
     req(fgsea_results())
     threshold <- input$padj_filtered_scatter
